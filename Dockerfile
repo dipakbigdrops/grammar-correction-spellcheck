@@ -17,6 +17,12 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libgomp1 \
     libglib2.0-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    libffi-dev \
+    libssl-dev \
+    cmake \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (required for tokenizers and sentencepiece compilation)
@@ -33,8 +39,69 @@ COPY requirements.txt .
 ENV GIT_LFS_SKIP_SMUDGE=1
 
 # Upgrade pip and install Python dependencies
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+# Install in stages to avoid memory issues and better error handling
+RUN pip install --upgrade pip setuptools wheel
+
+# Install core dependencies first
+RUN pip install --no-cache-dir \
+    numpy>=1.24.0,<2.0.0 \
+    setuptools>=68.0.0 \
+    wheel>=0.40.0 \
+    cython
+
+# Install web framework dependencies
+RUN pip install --no-cache-dir \
+    fastapi>=0.104.0,<1.0.0 \
+    uvicorn[standard]>=0.24.0,<1.0.0 \
+    python-multipart>=0.0.6,<1.0.0 \
+    pydantic>=2.5.0,<3.0.0 \
+    pydantic-settings>=2.1.0,<3.0.0
+
+# Install async and HTTP clients
+RUN pip install --no-cache-dir \
+    aiofiles>=23.2.0,<24.0.0 \
+    aiohttp>=3.9.0,<4.0.0 \
+    requests>=2.31.0,<3.0.0 \
+    httpx>=0.25.0,<1.0.0
+
+# Install HTML processing (lxml needs system dependencies)
+RUN pip install --no-cache-dir \
+    beautifulsoup4>=4.12.0,<5.0.0 \
+    lxml>=4.9.0,<5.0.0
+
+# Install Redis and Celery
+RUN pip install --no-cache-dir \
+    redis>=4.6.0,<5.0.0 \
+    celery[redis]>=5.3.0,<6.0.0 \
+    fakeredis>=2.32.0,<3.0.0 \
+    flower>=2.0.0,<3.0.0
+
+# Install Hugging Face dependencies (requires Rust, already installed)
+RUN pip install --no-cache-dir \
+    tokenizers>=0.13.0,<1.0.0 \
+    sentencepiece>=0.2.0,<1.0.0 \
+    safetensors>=0.3.0,<1.0.0 \
+    huggingface-hub>=0.16.0,<1.0.0 \
+    transformers>=4.30.0,<5.0.0 \
+    accelerate>=0.20.0,<1.0.0
+
+# Install PyTorch (CPU version for Render - smaller and faster)
+RUN pip install --no-cache-dir \
+    torch>=2.1.0,<3.0.0 \
+    torchvision>=0.16.0,<1.0.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install image processing dependencies
+RUN pip install --no-cache-dir \
+    pillow>=9.5.0,<11.0.0 \
+    opencv-python-headless>=4.8.0,<5.0.0 \
+    easyocr>=1.7.0,<2.0.0
+
+# Install remaining utilities
+RUN pip install --no-cache-dir \
+    python-dotenv>=1.0.0,<2.0.0 \
+    prometheus-client>=0.19.0,<1.0.0 \
+    protobuf>=3.20.0,<5.0.0
 
 # Copy application code
 COPY . .
