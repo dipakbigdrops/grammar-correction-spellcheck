@@ -39,60 +39,46 @@ COPY requirements.txt .
 ENV GIT_LFS_SKIP_SMUDGE=1
 
 # Upgrade pip and install Python dependencies
-# Install in stages to avoid memory issues and better error handling
-RUN pip install --upgrade pip setuptools wheel
+# Install essential build tools first
+RUN pip install --upgrade pip setuptools wheel cython
 
-# Install core dependencies first
+# Install numpy first (critical, and some packages depend on it)
+RUN pip install --no-cache-dir "numpy==1.26.4"
+
+# Install PyTorch CPU version first (large package, install early)
+# This prevents dependency conflicts and reduces build time
 RUN pip install --no-cache-dir \
-    numpy>=1.24.0,<2.0.0 \
-    setuptools>=68.0.0 \
-    wheel>=0.40.0 \
-    cython
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.1.0 \
+    torchvision==0.16.0
 
-# Install web framework dependencies
+# Now install remaining dependencies from requirements.txt
+# Split into two parts to avoid memory issues during build
 RUN pip install --no-cache-dir \
     fastapi>=0.104.0,<1.0.0 \
     uvicorn[standard]>=0.24.0,<1.0.0 \
     python-multipart>=0.0.6,<1.0.0 \
     pydantic>=2.5.0,<3.0.0 \
-    pydantic-settings>=2.1.0,<3.0.0
-
-# Install async and HTTP clients
-RUN pip install --no-cache-dir \
+    pydantic-settings>=2.1.0,<3.0.0 \
     aiofiles>=23.2.0,<24.0.0 \
     aiohttp>=3.9.0,<4.0.0 \
     requests>=2.31.0,<3.0.0 \
-    httpx>=0.25.0,<1.0.0
-
-# Install HTML processing (lxml needs system dependencies)
-RUN pip install --no-cache-dir \
+    httpx>=0.25.0,<1.0.0 \
     beautifulsoup4>=4.12.0,<5.0.0 \
-    lxml>=4.9.0,<5.0.0
-
-# Install Redis and Celery
-RUN pip install --no-cache-dir \
+    lxml>=4.9.0,<5.0.0 \
     redis>=4.6.0,<5.0.0 \
     celery[redis]>=5.3.0,<6.0.0 \
     fakeredis>=2.32.0,<3.0.0 \
     flower>=2.0.0,<3.0.0
 
-# Install Hugging Face dependencies (requires Rust, already installed)
+# Install ML/transformers dependencies (after PyTorch and numpy)
 RUN pip install --no-cache-dir \
     tokenizers>=0.13.0,<1.0.0 \
     sentencepiece>=0.2.0,<1.0.0 \
     safetensors>=0.3.0,<1.0.0 \
     huggingface-hub>=0.16.0,<1.0.0 \
     transformers>=4.30.0,<5.0.0 \
-    accelerate>=0.20.0,<1.0.0
-
-# Install PyTorch (CPU version for Render - smaller and faster)
-RUN pip install --no-cache-dir \
-    torch>=2.1.0,<3.0.0 \
-    torchvision>=0.16.0,<1.0.0 \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install image processing dependencies
-RUN pip install --no-cache-dir \
+    accelerate>=0.20.0,<1.0.0 \
     pillow>=9.5.0,<11.0.0 \
     opencv-python-headless>=4.8.0,<5.0.0 \
     easyocr>=1.7.0,<2.0.0
