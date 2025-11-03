@@ -113,7 +113,7 @@ COPY . .
 # This solves Git LFS issues by downloading model at build time instead of from Git
 # MODEL_ID should be set as environment variable in Render Dashboard (available during build)
 RUN mkdir -p ./model && \
-    python -c "from huggingface_hub import snapshot_download; import os; model_id = os.environ.get('MODEL_ID'); token = os.environ.get('HF_TOKEN') or None; print(f'MODEL_ID from env: {model_id}'); snapshot_download(repo_id=model_id, local_dir='./model', token=token) if model_id else print('WARNING: MODEL_ID not set - model will not be downloaded. Set MODEL_ID as environment variable in Render Dashboard.')" && \
+    /app/venv/bin/python -c "from huggingface_hub import snapshot_download; import os; model_id = os.environ.get('MODEL_ID'); token = os.environ.get('HF_TOKEN') or None; print(f'MODEL_ID from env: {model_id}'); snapshot_download(repo_id=model_id, local_dir='./model', token=token) if model_id else print('WARNING: MODEL_ID not set - model will not be downloaded. Set MODEL_ID as environment variable in Render Dashboard.')" && \
     echo "Model download process completed" && \
     ls -lh ./model/ 2>/dev/null || echo "Note: Model directory listing unavailable"
 
