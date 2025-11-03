@@ -94,19 +94,11 @@ COPY . .
 
 # Download model from Hugging Face during deployment
 # This solves Git LFS issues by downloading model at build time instead of from Git
-# MODEL_ID should be set as build arg or environment variable
-ARG MODEL_ID=""
-ARG HF_TOKEN=""
+# MODEL_ID should be set as environment variable in Render Dashboard (available during build)
 RUN mkdir -p ./model && \
-    if [ -n "${MODEL_ID}" ]; then \
-        echo "Downloading model from Hugging Face: ${MODEL_ID}"; \
-        python -c "from huggingface_hub import snapshot_download; import os; model_id = os.environ.get('MODEL_ID', '${MODEL_ID}'); token = os.environ.get('HF_TOKEN', '${HF_TOKEN}') or None; snapshot_download(repo_id=model_id, local_dir='./model', token=token)"; \
-        echo "Model downloaded successfully from Hugging Face"; \
-        ls -lh ./model/ 2>/dev/null || echo "Note: Model directory listing unavailable"; \
-    else \
-        echo "WARNING: MODEL_ID not set during build - model will not be downloaded"; \
-        echo "Model can be downloaded at runtime if MODEL_ID environment variable is set"; \
-    fi
+    python -c "from huggingface_hub import snapshot_download; import os; model_id = os.environ.get('MODEL_ID'); token = os.environ.get('HF_TOKEN') or None; print(f'MODEL_ID from env: {model_id}'); snapshot_download(repo_id=model_id, local_dir='./model', token=token) if model_id else print('WARNING: MODEL_ID not set - model will not be downloaded. Set MODEL_ID as environment variable in Render Dashboard.')" && \
+    echo "Model download process completed" && \
+    ls -lh ./model/ 2>/dev/null || echo "Note: Model directory listing unavailable"
 
 # Create necessary directories
 RUN mkdir -p /tmp/uploads /tmp/cache /tmp/outputs && \
