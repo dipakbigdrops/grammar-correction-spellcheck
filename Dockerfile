@@ -52,24 +52,36 @@ RUN pip install --no-cache-dir \
     torch==2.1.0 \
     torchvision==0.16.0
 
-# Now install remaining dependencies from requirements.txt
-# Split into two parts to avoid memory issues during build
+# Install web framework dependencies first (core dependencies)
 RUN pip install --no-cache-dir \
     fastapi>=0.104.0,<1.0.0 \
     uvicorn[standard]>=0.24.0,<1.0.0 \
-    python-multipart>=0.0.6,<1.0.0 \
+    python-multipart>=0.0.6,<1.0.0
+
+# Install pydantic and settings
+RUN pip install --no-cache-dir \
     pydantic>=2.5.0,<3.0.0 \
-    pydantic-settings>=2.1.0,<3.0.0 \
+    pydantic-settings>=2.1.0,<3.0.0
+
+# Install async and HTTP clients
+RUN pip install --no-cache-dir \
     aiofiles>=23.2.0,<24.0.0 \
     aiohttp>=3.9.0,<4.0.0 \
     requests>=2.31.0,<3.0.0 \
-    httpx>=0.25.0,<1.0.0 \
-    beautifulsoup4>=4.12.0,<5.0.0 \
-    lxml>=4.9.0,<5.0.0 \
+    httpx>=0.25.0,<1.0.0
+
+# Install HTML processing (lxml can be problematic, install separately)
+RUN pip install --no-cache-dir beautifulsoup4>=4.12.0,<5.0.0 && \
+    pip install --no-cache-dir lxml>=4.9.0,<5.0.0
+
+# Install Redis (simple packages)
+RUN pip install --no-cache-dir \
     redis>=4.6.0,<5.0.0 \
-    celery[redis]>=5.3.0,<6.0.0 \
-    fakeredis>=2.32.0,<3.0.0 \
-    flower>=2.0.0,<3.0.0
+    fakeredis>=2.32.0,<3.0.0
+
+# Install Celery and Flower (can be memory intensive)
+RUN pip install --no-cache-dir celery[redis]>=5.3.0,<6.0.0 && \
+    pip install --no-cache-dir flower>=2.0.0,<3.0.0
 
 # Install ML/transformers dependencies (after PyTorch and numpy)
 RUN pip install --no-cache-dir \
