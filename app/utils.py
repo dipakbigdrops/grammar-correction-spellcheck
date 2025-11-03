@@ -19,34 +19,43 @@ redis_client = None
 
 
 def get_redis_client():
-    """Get Redis client instance - uses fakeredis as fallback for Windows"""
+    """Get Redis client instance - uses fakeredis as fallback if Redis unavailable"""
     global redis_client
     if redis_client is None:
-        try:
-            # Try to connect to real Redis first
-            redis_client = redis.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=settings.REDIS_DB,
-                password=settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None,
-                decode_responses=True,
-                socket_connect_timeout=2,
-                socket_timeout=2
-            )
-            # Test connection
-            redis_client.ping()
-            logger.info("✅ Connected to Redis server successfully")
-        except (redis.ConnectionError, redis.TimeoutError, OSError) as e:
-            logger.warning("Real Redis not available: %s", e)
+        # Skip Redis if host is explicitly set to skip or if host is localhost in production
+        if settings.REDIS_HOST.lower() in ('skip', 'none', 'false', ''):
+            logger.info("Redis disabled via configuration")
+            redis_client = None
+        else:
             try:
-                # Fallback to fakeredis (in-memory Redis for development)
-                import fakeredis  # pylint: disable=import-outside-toplevel
-                redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
+                # Try to connect to real Redis first
+                logger.info(f"Attempting to connect to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+                redis_client = redis.Redis(
+                    host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    db=settings.REDIS_DB,
+                    password=settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None,
+                    decode_responses=True,
+                    socket_connect_timeout=5,  # Increased timeout for Render
+                    socket_timeout=5,  # Increased timeout for Render
+                    retry_on_timeout=True,
+                    health_check_interval=30
+                )
+                # Test connection
                 redis_client.ping()
-                logger.info("✅ Using FakeRedis (in-memory) - perfect for development!")
-            except (ImportError, AttributeError) as fake_error:
-                logger.error("Failed to initialize FakeRedis: %s", fake_error)
-                redis_client = None
+                logger.info(f"✅ Connected to Redis server successfully at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+            except (redis.ConnectionError, redis.TimeoutError, OSError, Exception) as e:
+                logger.warning(f"Real Redis not available at {settings.REDIS_HOST}:{settings.REDIS_PORT}: {e}")
+                logger.info("Falling back to FakeRedis (in-memory) - cache will be in-memory only")
+                try:
+                    # Fallback to fakeredis (in-memory Redis for development)
+                    import fakeredis  # pylint: disable=import-outside-toplevel
+                    redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
+                    redis_client.ping()
+                    logger.info("✅ Using FakeRedis (in-memory) - perfect for development!")
+                except (ImportError, AttributeError) as fake_error:
+                    logger.error("Failed to initialize FakeRedis: %s", fake_error)
+                    redis_client = None
     return redis_client
 
 
