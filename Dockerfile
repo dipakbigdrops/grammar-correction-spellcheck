@@ -125,8 +125,11 @@ RUN /app/venv/bin/pip install --no-cache-dir \
     "transformers>=4.37.0,<4.50.0" \
     "accelerate>=0.20.0,<1.0.0" \
     "pillow==10.4.0" \
-    "opencv-python-headless>=4.8.0,<5.0.0" \
+    "opencv-python-headless==4.9.0.80" \
     "easyocr>=1.7.0,<2.0.0"
+
+# Force opencv version after easyocr (easyocr may try to upgrade opencv)
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "opencv-python-headless==4.9.0.80"
 
 # Force protobuf version after transformers (transformers may pull different version)
 RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "protobuf==4.25.3"
@@ -136,9 +139,10 @@ RUN /app/venv/bin/pip install --no-cache-dir \
     "python-dotenv>=1.0.0,<2.0.0" \
     "prometheus-client>=0.19.0,<1.0.0"
 
-# Final numpy and protobuf version enforcement after all dependencies
+# Final numpy, protobuf, and opencv version enforcement after all dependencies
 RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4" && \
-    /app/venv/bin/pip install --no-cache-dir --force-reinstall "protobuf==4.25.3"
+    /app/venv/bin/pip install --no-cache-dir --force-reinstall "protobuf==4.25.3" && \
+    /app/venv/bin/pip install --no-cache-dir --force-reinstall "opencv-python-headless==4.9.0.80"
 
 # Copy application code
 COPY . .

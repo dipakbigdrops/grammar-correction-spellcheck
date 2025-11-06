@@ -20,7 +20,7 @@ tokenizers>=0.13.0,<1.0.0
 sentencepiece>=0.2.0,<1.0.0
 easyocr>=1.7.0,<2.0.0
 accelerate>=0.20.0,<1.0.0
-opencv-python-headless>=4.8.0,<5.0.0
+opencv-python-headless==4.9.0.80
 numpy==1.26.4
 pillow==10.4.0
 
