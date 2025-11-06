@@ -21,6 +21,15 @@ RUN apt-get update && apt-get install -y \
     libxslt1-dev \
     libffi-dev \
     libssl-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libv4l-dev \
+    libxvidcore-dev \
+    libx264-dev \
     cmake \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
@@ -57,6 +66,16 @@ RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
 RUN /app/venv/bin/pip install --no-cache-dir \
     "pydantic>=2.5.0,<3.0.0" \
     "pydantic-settings>=2.1.0,<3.0.0"
+
+# Install PyTorch dependencies first (required when using --no-deps)
+RUN /app/venv/bin/pip install --no-cache-dir \
+    "typing-extensions>=4.8.0" \
+    "filelock>=3.9.0" \
+    "networkx>=2.6.0" \
+    "sympy>=1.12.0" \
+    "jinja2>=3.1.2" \
+    "fsspec>=2023.6.0" \
+    "packaging>=21.3"
 
 # Install PyTorch CPU version (large package, install early)
 # Using 2.2.0 for better compatibility with transformers
@@ -105,18 +124,21 @@ RUN /app/venv/bin/pip install --no-cache-dir \
     "huggingface-hub>=0.16.0,<1.0.0" \
     "transformers>=4.37.0,<4.50.0" \
     "accelerate>=0.20.0,<1.0.0" \
-    "pillow>=9.5.0,<11.0.0" \
+    "pillow==10.4.0" \
     "opencv-python-headless>=4.8.0,<5.0.0" \
     "easyocr>=1.7.0,<2.0.0"
+
+# Force protobuf version after transformers (transformers may pull different version)
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "protobuf==4.25.3"
 
 # Install remaining utilities
 RUN /app/venv/bin/pip install --no-cache-dir \
     "python-dotenv>=1.0.0,<2.0.0" \
-    "prometheus-client>=0.19.0,<1.0.0" \
-    "protobuf>=3.20.0,<5.0.0"
+    "prometheus-client>=0.19.0,<1.0.0"
 
-# Final numpy version enforcement after all dependencies
-RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
+# Final numpy and protobuf version enforcement after all dependencies
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4" && \
+    /app/venv/bin/pip install --no-cache-dir --force-reinstall "protobuf==4.25.3"
 
 # Copy application code
 COPY . .
