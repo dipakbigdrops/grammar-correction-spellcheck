@@ -196,7 +196,7 @@ async def health_check():
 async def process_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    async_processing: bool = Form(True)
+    async_processing: bool = Form(default=True)
 ):
     """
     Process uploaded file for grammar correction - Universal Input Support
