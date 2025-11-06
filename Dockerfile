@@ -47,7 +47,7 @@ ENV VIRTUAL_ENV=/app/venv \
     PATH="/app/venv/bin:$PATH"
 
 # Copy requirements and constraints first for better Docker layer caching
-COPY requirements.txt constraints.txt .
+COPY requirements.txt constraints.txt ./
 
 # Skip Git LFS during build (prevents LFS download failures)
 ENV GIT_LFS_SKIP_SMUDGE=1
