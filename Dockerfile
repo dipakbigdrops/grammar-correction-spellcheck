@@ -69,6 +69,7 @@ RUN /app/venv/bin/pip install --no-cache-dir --constraint constraints.txt \
     "pydantic-settings>=2.1.0,<3.0.0"
 
 # Install PyTorch dependencies first (required when using --no-deps)
+# Install pillow BEFORE torchvision (torchvision requires it)
 RUN /app/venv/bin/pip install --no-cache-dir --constraint constraints.txt \
     "typing-extensions>=4.8.0" \
     "filelock>=3.9.0" \
@@ -76,7 +77,8 @@ RUN /app/venv/bin/pip install --no-cache-dir --constraint constraints.txt \
     "sympy>=1.12.0" \
     "jinja2>=3.1.2" \
     "fsspec>=2023.6.0" \
-    "packaging>=21.3"
+    "packaging>=21.3" \
+    "pillow==10.4.0"
 
 # Install PyTorch CPU version (large package, install early)
 # Using 2.2.0 for better compatibility with transformers
