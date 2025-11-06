@@ -50,6 +50,9 @@ RUN /app/venv/bin/pip install --upgrade pip setuptools wheel cython
 # Install numpy first (critical, and some packages depend on it)
 RUN /app/venv/bin/pip install --no-cache-dir "numpy==1.26.4"
 
+# Force numpy version before any other ML packages
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
+
 # Install Pydantic FIRST (FastAPI depends on it)
 RUN /app/venv/bin/pip install --no-cache-dir \
     "pydantic>=2.5.0,<3.0.0" \
@@ -57,10 +60,15 @@ RUN /app/venv/bin/pip install --no-cache-dir \
 
 # Install PyTorch CPU version (large package, install early)
 # Using 2.2.0 for better compatibility with transformers
+# Using --no-deps to prevent numpy version conflicts
 RUN /app/venv/bin/pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
     torch==2.2.0 \
-    torchvision==0.17.0
+    torchvision==0.17.0 \
+    --no-deps
+
+# Force numpy version after PyTorch installation
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
 
 # Install web framework dependencies (FastAPI needs Pydantic already installed)
 RUN /app/venv/bin/pip install --no-cache-dir \
@@ -106,6 +114,9 @@ RUN /app/venv/bin/pip install --no-cache-dir \
     "python-dotenv>=1.0.0,<2.0.0" \
     "prometheus-client>=0.19.0,<1.0.0" \
     "protobuf>=3.20.0,<5.0.0"
+
+# Final numpy version enforcement after all dependencies
+RUN /app/venv/bin/pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
 
 # Copy application code
 COPY . .
