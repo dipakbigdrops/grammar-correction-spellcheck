@@ -33,7 +33,8 @@ class CacheManager:
             'text_hits': 0,
             'model_hits': 0,
             'ocr_hits': 0,
-            'partial_hits': 0
+            'partial_hits': 0,
+            'result_hits': 0
         }
     
     def _get_cache(self, key: str, cache_type: str = 'result') -> Optional[Any]:
@@ -45,7 +46,11 @@ class CacheManager:
             cached = self.redis_client.get(key)
             if cached:
                 self.cache_stats['hits'] += 1
-                self.cache_stats[f'{cache_type}_hits'] += 1
+                # Initialize cache_type_hits if it doesn't exist
+                cache_type_key = f'{cache_type}_hits'
+                if cache_type_key not in self.cache_stats:
+                    self.cache_stats[cache_type_key] = 0
+                self.cache_stats[cache_type_key] += 1
                 logger.debug("Cache hit for %s", key)
                 return json.loads(cached)
             self.cache_stats['misses'] += 1
@@ -159,10 +164,11 @@ class CacheManager:
             'hits': self.cache_stats['hits'],
             'misses': self.cache_stats['misses'],
             'hit_rate': round(hit_rate, 2),
-            'text_hits': self.cache_stats['text_hits'],
-            'model_hits': self.cache_stats['model_hits'],
-            'ocr_hits': self.cache_stats['ocr_hits'],
-            'partial_hits': self.cache_stats['partial_hits']
+            'text_hits': self.cache_stats.get('text_hits', 0),
+            'model_hits': self.cache_stats.get('model_hits', 0),
+            'ocr_hits': self.cache_stats.get('ocr_hits', 0),
+            'partial_hits': self.cache_stats.get('partial_hits', 0),
+            'result_hits': self.cache_stats.get('result_hits', 0)
         }
     
     def clear_cache(self, cache_type: str = None) -> bool:

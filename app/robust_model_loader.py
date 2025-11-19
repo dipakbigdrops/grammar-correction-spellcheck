@@ -12,21 +12,33 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def load_robust_model(model_path: str, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """
     Ultimate T5 model loader with comprehensive tokenizer compatibility
     Handles all known tokenizer issues permanently
+    
+    Args:
+        model_path: Local path to model directory OR Hugging Face repo ID (e.g., "username/repo-name")
+        hf_token: Optional Hugging Face token for private models
     """
-    if not os.path.exists(model_path):
+    # Check if model_path is a Hugging Face repo ID (format: "username/repo-name")
+    is_hf_repo = "/" in model_path and not os.path.exists(model_path) and not os.path.isabs(model_path)
+    
+    # If it's a local path that doesn't exist, return None
+    if not is_hf_repo and not os.path.exists(model_path):
         logger.error("Model path does not exist: %s", model_path)
         return None, None
     
-    logger.info("🚀 Starting ultimate model loading for: %s", model_path)
+    # If it's a Hugging Face repo ID, transformers will download it automatically
+    if is_hf_repo:
+        logger.info(" Detected Hugging Face repo ID: %s (will download automatically)", model_path)
+    else:
+        logger.info(" Starting ultimate model loading for local path: %s", model_path)
     
     # Strategy 1: Fix tokenizer config and load with T5Tokenizer
     try:
         logger.info("Strategy 1: T5Tokenizer with fixed config...")
-        model, tokenizer = _load_with_fixed_t5_tokenizer(model_path)
+        model, tokenizer = _load_with_fixed_t5_tokenizer(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
@@ -35,7 +47,7 @@ def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     # Strategy 2: AutoTokenizer with legacy=False
     try:
         logger.info("Strategy 2: AutoTokenizer with legacy=False...")
-        model, tokenizer = _load_with_auto_tokenizer_legacy_false(model_path)
+        model, tokenizer = _load_with_auto_tokenizer_legacy_false(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
@@ -44,7 +56,7 @@ def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     # Strategy 3: AutoTokenizer with custom tokenizer class
     try:
         logger.info("Strategy 3: AutoTokenizer with custom tokenizer class...")
-        model, tokenizer = _load_with_custom_tokenizer_class(model_path)
+        model, tokenizer = _load_with_custom_tokenizer_class(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
@@ -53,7 +65,7 @@ def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     # Strategy 4: Manual tokenizer creation
     try:
         logger.info("Strategy 4: Manual tokenizer creation...")
-        model, tokenizer = _load_with_manual_tokenizer(model_path)
+        model, tokenizer = _load_with_manual_tokenizer(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
@@ -62,7 +74,7 @@ def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     # Strategy 5: Fallback to basic T5 classes
     try:
         logger.info("Strategy 5: Basic T5 classes...")
-        model, tokenizer = _load_with_basic_t5(model_path)
+        model, tokenizer = _load_with_basic_t5(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
@@ -71,47 +83,55 @@ def load_robust_model(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     # Strategy 6: Fallback without SentencePiece (emergency fallback)
     try:
         logger.info("Strategy 6: Emergency fallback without SentencePiece...")
-        model, tokenizer = _load_without_sentencepiece(model_path)
+        model, tokenizer = _load_without_sentencepiece(model_path, is_hf_repo, hf_token)
         if model and tokenizer:
             return model, tokenizer
     except (OSError, ImportError, RuntimeError) as e:
         logger.warning("Strategy 6 failed: %s", e)
     
-    logger.error("❌ All model loading strategies failed")
+    logger.error(" All model loading strategies failed")
     return None, None
 
 
-def _load_with_fixed_t5_tokenizer(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_with_fixed_t5_tokenizer(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Load with T5Tokenizer after fixing tokenizer config"""
     from transformers import T5ForConditionalGeneration, T5Tokenizer
     
-    # Fix tokenizer config to ensure compatibility
-    tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
-    if os.path.exists(tokenizer_config_path):
-        with open(tokenizer_config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        # Fix common compatibility issues
-        config["legacy"] = False  # Force non-legacy mode
-        config["use_fast"] = False  # Disable fast tokenizer
-        config["clean_up_tokenization_spaces"] = True
-        
-        # Save fixed config
-        with open(tokenizer_config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
+    # Fix tokenizer config to ensure compatibility (only for local paths)
+    if not is_hf_repo:
+        tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
+        if os.path.exists(tokenizer_config_path):
+            with open(tokenizer_config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # Fix common compatibility issues
+            config["legacy"] = False  # Force non-legacy mode
+            config["use_fast"] = False  # Disable fast tokenizer
+            config["clean_up_tokenization_spaces"] = True
+            
+            # Save fixed config
+            with open(tokenizer_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
     
-    # Load with T5Tokenizer
-    tokenizer = T5Tokenizer.from_pretrained(
-        model_path,
-        legacy=False,
-        use_fast=False,
-        clean_up_tokenization_spaces=True
-    )
+    # Prepare token parameter for private models
+    tokenizer_kwargs = {
+        "legacy": False,
+        "use_fast": False,
+        "clean_up_tokenization_spaces": True
+    }
+    model_kwargs = {
+        "torch_dtype": torch.float32
+    }
     
-    model = T5ForConditionalGeneration.from_pretrained(
-        model_path,
-        torch_dtype=torch.float32
-    )
+    if hf_token:
+        tokenizer_kwargs["token"] = hf_token
+        model_kwargs["token"] = hf_token
+    
+    # Load with T5Tokenizer (can download from Hugging Face if repo ID provided)
+    tokenizer = T5Tokenizer.from_pretrained(model_path, **tokenizer_kwargs)
+    
+    # Load model (can download from Hugging Face if repo ID provided)
+    model = T5ForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
     
     # Test the model
     if _test_model_inference(model, tokenizer):
@@ -121,23 +141,28 @@ def _load_with_fixed_t5_tokenizer(model_path: str) -> Tuple[Optional[Any], Optio
     return None, None
 
 
-def _load_with_auto_tokenizer_legacy_false(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_with_auto_tokenizer_legacy_false(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Load with AutoTokenizer setting legacy=False"""
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     
-    # Load tokenizer with legacy=False
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        legacy=False,
-        use_fast=False,
-        local_files_only=True
-    )
+    # Prepare token parameter for private models
+    tokenizer_kwargs = {
+        "legacy": False,
+        "use_fast": False
+    }
+    model_kwargs = {
+        "torch_dtype": torch.float32
+    }
     
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float32,
-        local_files_only=True
-    )
+    if hf_token:
+        tokenizer_kwargs["token"] = hf_token
+        model_kwargs["token"] = hf_token
+    
+    # Load tokenizer (can download from Hugging Face if repo ID provided)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **tokenizer_kwargs)
+    
+    # Load model (can download from Hugging Face if repo ID provided)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **model_kwargs)
     
     # Test the model
     if _test_model_inference(model, tokenizer):
@@ -147,22 +172,29 @@ def _load_with_auto_tokenizer_legacy_false(model_path: str) -> Tuple[Optional[An
     return None, None
 
 
-def _load_with_custom_tokenizer_class(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_with_custom_tokenizer_class(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Load with custom tokenizer class specification"""
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     
-    # Try loading with explicit tokenizer class
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        tokenizer_class="T5Tokenizer",
-        legacy=False,
-        use_fast=False
-    )
+    # Prepare token parameter for private models
+    tokenizer_kwargs = {
+        "tokenizer_class": "T5Tokenizer",
+        "legacy": False,
+        "use_fast": False
+    }
+    model_kwargs = {
+        "torch_dtype": torch.float32
+    }
     
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float32
-    )
+    if hf_token:
+        tokenizer_kwargs["token"] = hf_token
+        model_kwargs["token"] = hf_token
+    
+    # Try loading with explicit tokenizer class (can download from Hugging Face if repo ID provided)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **tokenizer_kwargs)
+    
+    # Load model (can download from Hugging Face if repo ID provided)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **model_kwargs)
     
     # Test the model
     if _test_model_inference(model, tokenizer):
@@ -172,47 +204,64 @@ def _load_with_custom_tokenizer_class(model_path: str) -> Tuple[Optional[Any], O
     return None, None
 
 
-def _load_with_manual_tokenizer(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_with_manual_tokenizer(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Load with manually created tokenizer"""
     from transformers import AutoModelForSeq2SeqLM, T5Tokenizer
     
-    # Load model first
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float32
-    )
+    # Prepare token parameter for private models
+    model_kwargs = {
+        "torch_dtype": torch.float32
+    }
     
-    # Create tokenizer manually from files
-    tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
-    spiece_model_path = os.path.join(model_path, "spiece.model")
+    if hf_token:
+        model_kwargs["token"] = hf_token
     
-    if os.path.exists(spiece_model_path):
-        # Create tokenizer from SentencePiece model
-        tokenizer = T5Tokenizer(
-            vocab_file=spiece_model_path,
-            eos_token="</s>",
-            pad_token="<pad>",
-            unk_token="<unk>",
-            extra_ids=100,
-            legacy=False
-        )
+    # Load model first (can download from Hugging Face if repo ID provided)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **model_kwargs)
+    
+    # Create tokenizer manually from files (only works for local paths)
+    if is_hf_repo:
+        # For HF repos, use AutoTokenizer instead
+        tokenizer = T5Tokenizer.from_pretrained(model_path, token=hf_token if hf_token else None)
+    else:
+        tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
+        spiece_model_path = os.path.join(model_path, "spiece.model")
         
-        # Test the model
-        if _test_model_inference(model, tokenizer):
-            logger.info(" Strategy 4 successful: Manual tokenizer creation")
-            return model, tokenizer
+        if os.path.exists(spiece_model_path):
+            # Create tokenizer from SentencePiece model
+            tokenizer = T5Tokenizer(
+                vocab_file=spiece_model_path,
+                eos_token="</s>",
+                pad_token="<pad>",
+                unk_token="<unk>",
+                extra_ids=100,
+                legacy=False
+            )
+            
+            # Test the model
+            if _test_model_inference(model, tokenizer):
+                logger.info(" Strategy 4 successful: Manual tokenizer creation")
+                return model, tokenizer
     
     return None, None
 
 
-def _load_with_basic_t5(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_with_basic_t5(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Load with basic T5 classes as final fallback"""
     from transformers import T5ForConditionalGeneration, T5Tokenizer
     
     try:
-        # Try with minimal parameters
-        tokenizer = T5Tokenizer.from_pretrained(model_path)
-        model = T5ForConditionalGeneration.from_pretrained(model_path)
+        # Prepare token parameter for private models
+        tokenizer_kwargs = {}
+        model_kwargs = {}
+        
+        if hf_token:
+            tokenizer_kwargs["token"] = hf_token
+            model_kwargs["token"] = hf_token
+        
+        # Try with minimal parameters (can download from Hugging Face if repo ID provided)
+        tokenizer = T5Tokenizer.from_pretrained(model_path, **tokenizer_kwargs)
+        model = T5ForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
         
         # Test the model
         if _test_model_inference(model, tokenizer):
@@ -224,17 +273,23 @@ def _load_with_basic_t5(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
     return None, None
 
 
-def _load_without_sentencepiece(model_path: str) -> Tuple[Optional[Any], Optional[Any]]:
+def _load_without_sentencepiece(model_path: str, is_hf_repo: bool = False, hf_token: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any]]:
     """Emergency fallback that creates a mock tokenizer if SentencePiece fails"""
     from transformers import AutoModelForSeq2SeqLM
     import torch
     
     try:
         # Load model without tokenizer first
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float32
-        )
+        # Prepare token parameter for private models
+        model_kwargs = {
+            "torch_dtype": torch.float32
+        }
+        
+        if hf_token:
+            model_kwargs["token"] = hf_token
+        
+        # Load model without tokenizer first (can download from Hugging Face if repo ID provided)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **model_kwargs)
         
         # Create a simple mock tokenizer for basic functionality
         class MockTokenizer:

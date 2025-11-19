@@ -2,13 +2,16 @@
 FastAPI Application
 Main API endpoints and application setup
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form, Query
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+import hashlib
+import uuid
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from celery.result import AsyncResult
 import logging
 import os
-from typing import Optional
+from typing import Optional, Dict, Any
 import time
 from contextlib import asynccontextmanager
 
@@ -25,9 +28,69 @@ from app.utils import (
     get_redis_client, compute_file_hash, get_cached_result,
     set_cached_result, save_uploaded_file, cleanup_old_files
 )
+
+# Helper functions for HTML preview storage in Redis
+def store_html_preview(preview_id: str, html_content: str, filename: str, ttl: int = 3600) -> bool:
+    """Store HTML preview in Redis with TTL"""
+    try:
+        redis_client = get_redis_client()
+        if not redis_client:
+            logger.warning("Redis not available, HTML preview will not be stored")
+            return False
+        
+        preview_data = {
+            'html': html_content,
+            'timestamp': time.time(),
+            'filename': filename
+        }
+        
+        key = f"html_preview:{preview_id}"
+        redis_client.setex(key, ttl, json.dumps(preview_data))
+        logger.debug("Stored HTML preview %s in Redis with TTL %d", preview_id, ttl)
+        return True
+    except Exception as e:
+        logger.error("Error storing HTML preview in Redis: %s", e, exc_info=True)
+        return False
+
+def get_html_preview_data(preview_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve HTML preview from Redis"""
+    try:
+        redis_client = get_redis_client()
+        if not redis_client:
+            return None
+        
+        key = f"html_preview:{preview_id}"
+        cached_data = redis_client.get(key)
+        
+        if cached_data:
+            preview_data = json.loads(cached_data)
+            logger.debug("Retrieved HTML preview %s from Redis", preview_id)
+            return preview_data
+        return None
+    except Exception as e:
+        logger.error("Error retrieving HTML preview from Redis: %s", e, exc_info=True)
+        return None
+
+def delete_html_preview(preview_id: str) -> bool:
+    """Delete HTML preview from Redis"""
+    try:
+        redis_client = get_redis_client()
+        if not redis_client:
+            return False
+        
+        key = f"html_preview:{preview_id}"
+        redis_client.delete(key)
+        logger.debug("Deleted HTML preview %s from Redis", preview_id)
+        return True
+    except Exception as e:
+        logger.error("Error deleting HTML preview from Redis: %s", e, exc_info=True)
+        return False
 from app.processor import get_processor
 from app.universal_processor import get_universal_processor
 from app.cache_manager import get_cache_manager
+
+# HTML previews are now stored in Redis with 1-hour TTL
+# Helper functions for Redis-based preview storage
 
 # Configure logging
 logging.basicConfig(
@@ -192,21 +255,65 @@ async def health_check():
     )
 
 
-@app.post("/process", response_model=TaskResponse, tags=["Processing"])
+@app.post(
+    "/process",
+    response_model=TaskResponse,
+    tags=["Processing"],
+    responses={
+        200: {
+            "description": "Processing results",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/TaskResponse"},
+                    "example": {
+                        "task_id": "universal",
+                        "status": "SUCCESS",
+                        "message": "Processing completed",
+                        "result": {
+                            "input_type": "html",
+                            "output_content": "<html>...</html>",
+                            "corrections_count": 1
+                        }
+                    }
+                },
+                "text/html": {
+                    "schema": {"type": "string"},
+                    "example": "<html><body><p>This is a <u>test</u> sentence.</p></body></html>"
+                }
+            }
+        },
+        400: {"description": "Bad request - invalid file type or format parameter"},
+        500: {"description": "Internal server error"}
+    },
+    summary="Process file for grammar correction",
+    description="""
+    Process uploaded file for grammar correction with support for multiple response formats.
+    
+    **Response Formats:**
+    - `format=json` (default): Returns JSON with processing results
+    - `format=html`: Returns HTML directly with `Content-Type: text/html` (HTML input only)
+    
+    **Supported Input Types:**
+    - Images: .jpg, .jpeg, .png
+    - HTML: .html, .htm
+    - Archives: .zip (containing images/HTML)
+    
+    **HTML Response:**
+    When `format=html` is used with HTML input, the response contains the corrected HTML
+    with `<u>` tags wrapping corrected words. The response has `Content-Type: text/html`
+    and can be rendered directly in a browser.
+    
+    **Preview:**
+    For HTML responses, a `preview_id` is included in the response headers. Use
+    `/process/preview/{preview_id}` to retrieve the HTML later.
+    """
+)
 async def process_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    async_processing: bool = Form(default=True)
+    async_processing: bool = Form(default=True),
+    format: Optional[str] = Query(default="json", description="Response format: 'json' or 'html' (for HTML input only)")
 ):
-    """
-    Process uploaded file for grammar correction - Universal Input Support
-    
-    - **file**: Image (.jpg, .png, .jpeg), HTML (.html, .htm), or ZIP archive containing images/HTML
-    - **async_processing**: Parameter kept for API compatibility but ignored (always processes synchronously)
-    
-    Returns immediate processing results with corrected text and reconstructed content
-    Supports both single files and ZIP archives with batch processing optimization
-    """
     try:
         # Validate file extension
         file_extension = os.path.splitext(file.filename)[1].lower()
@@ -222,6 +329,9 @@ async def process_file(
                 detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
             )
         
+        # Store filename before reading (file object may become unavailable)
+        original_filename = file.filename
+        
         # Read file content
         file_content = await file.read()
         
@@ -233,14 +343,14 @@ async def process_file(
             )
         
         # Save uploaded file
-        file_path = save_uploaded_file(file_content, file.filename)
+        file_path = save_uploaded_file(file_content, original_filename)
         
         # Schedule cleanup
         background_tasks.add_task(cleanup_old_files, "/tmp/uploads", 3600)
         background_tasks.add_task(cleanup_old_files, "/tmp/outputs", 3600)
         
         # Use universal processor for all input types
-        logger.info("Processing %s with universal processor (async_processing=%s ignored)", file.filename, async_processing)
+        logger.info("Processing %s with universal processor (async_processing=%s ignored)", original_filename, async_processing)
         
         universal_processor = get_universal_processor()
         result = universal_processor.process_any_input(file_path, output_dir="/tmp/outputs")
@@ -248,6 +358,34 @@ async def process_file(
         # Add performance stats to response
         stats = universal_processor.get_performance_stats()
         result['performance_stats'] = stats
+        
+        # If format is html and input is HTML, return HTML directly (not escaped in JSON)
+        if format and format.lower() == "html":
+            # Check if this is HTML input
+            input_type = result.get('input_type')
+            if input_type == 'html' and result.get('success'):
+                output_content = result.get('output_content')
+                if output_content and isinstance(output_content, str):
+                    # Generate preview ID for later retrieval
+                    preview_id = str(uuid.uuid4())
+                    
+                    # Store HTML preview in Redis with 1-hour TTL
+                    store_html_preview(preview_id, output_content, original_filename, ttl=3600)
+                    
+                    # Return as HTML with proper content type and preview ID header
+                    response = HTMLResponse(
+                        content=output_content,
+                        status_code=200,
+                        media_type="text/html"
+                    )
+                    response.headers["X-Preview-ID"] = preview_id
+                    return response
+            else:
+                # If format=html but input is not HTML, return error
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"format=html is only available for HTML input files. Current input type: {input_type}"
+                )
         
         return JSONResponse(content={
             "task_id": "universal",
@@ -358,6 +496,77 @@ async def download_file(filename: str):
         path=file_path,
         filename=filename,
         media_type='application/octet-stream'
+    )
+
+
+@app.get(
+    "/process/preview/{preview_id}",
+    response_class=HTMLResponse,
+    tags=["Processing"],
+    responses={
+        200: {
+            "description": "HTML preview of processed file",
+            "content": {
+                "text/html": {
+                    "schema": {"type": "string"},
+                    "example": "<html><body><p>This is a <u>test</u> sentence.</p></body></html>"
+                }
+            }
+        },
+        404: {"description": "Preview not found or expired"}
+    },
+    summary="Get HTML preview of processed file",
+    description="""
+    Retrieve the HTML preview of a processed file using the preview ID.
+    
+    Preview IDs are returned in the `X-Preview-ID` header when using `format=html`
+    with the `/process` endpoint. Previews are stored for 1 hour.
+    
+    This endpoint is useful for:
+    - Opening HTML previews in a browser
+    - Sharing processed HTML results
+    - Testing HTML rendering without re-processing
+    
+    **Example:**
+    ```bash
+    # Process file and get preview ID
+    curl -X POST "http://localhost:8000/process?format=html" -F "file=@example.html"
+    # Response includes: X-Preview-ID: abc123-def456-...
+    
+    # Retrieve preview
+    curl "http://localhost:8000/process/preview/abc123-def456-..."
+    ```
+    """
+)
+async def get_html_preview(preview_id: str):
+    """
+    Get HTML preview of processed file by preview ID
+    
+    - **preview_id**: Preview ID from X-Preview-ID header (returned when format=html)
+    """
+    # Retrieve preview from Redis
+    preview_data = get_html_preview_data(preview_id)
+    
+    if not preview_data:
+        raise HTTPException(
+            status_code=404,
+            detail="HTML preview not found or expired. Previews are stored for 1 hour."
+        )
+    
+    html_content = preview_data.get('html')
+    if not html_content:
+        raise HTTPException(
+            status_code=404,
+            detail="HTML preview data is invalid."
+        )
+    
+    return HTMLResponse(
+        content=html_content,
+        status_code=200,
+        media_type="text/html",
+        headers={
+            "X-Original-Filename": preview_data.get('filename', 'unknown')
+        }
     )
 
 

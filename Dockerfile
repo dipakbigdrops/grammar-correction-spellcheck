@@ -155,7 +155,7 @@ RUN /app/venv/bin/python -c "import numpy; assert numpy.__version__ == '1.26.4',
 # Copy application code
 COPY . .
 
-# Download model from Hugging Face during deployment (as root, before switching user)
+# Download model from Hugging Face during deployment
 # This solves Git LFS issues by downloading model at build time instead of from Git
 # MODEL_ID should be set as environment variable in Render Dashboard
 # Render passes environment variables to Docker build, so we use ARG to capture them

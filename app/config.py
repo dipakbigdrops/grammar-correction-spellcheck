@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     
     # Model Settings
     MODEL_PATH: str = "./model"
+    MODEL_ID: str = ""  # Hugging Face model ID (e.g., "dipak-bigdrops/grammar-correction-model")
+    HF_TOKEN: str = ""  # Hugging Face token (optional, only needed for private models)
     MODEL_MAX_LENGTH: int = 128
     MODEL_NUM_BEAMS: int = 5
     

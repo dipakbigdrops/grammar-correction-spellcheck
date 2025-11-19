@@ -39,8 +39,10 @@ class GrammarCorrectionProcessor:
         self.model = None
         self.tokenizer = None
         self.ocr_reader = None
+        self.spell_checker = None
         self._load_model()
         self._initialize_ocr()
+        self._initialize_spell_checker()
 
         GrammarCorrectionProcessor._initialized = True
         logger.info(" GrammarCorrectionProcessor initialized (singleton)")
@@ -48,16 +50,40 @@ class GrammarCorrectionProcessor:
     def _load_model(self):
         """Load model with ultimate robust error handling"""
         try:
-            if os.path.exists(settings.MODEL_PATH):
-                logger.info(" Loading model from %s", settings.MODEL_PATH)
+            # Check if model path exists or if we should download from Hugging Face
+            model_path = settings.MODEL_PATH
+            model_id = getattr(settings, 'MODEL_ID', None)
+            
+            # If model path doesn't exist and MODEL_ID is set, download from Hugging Face
+            if not os.path.exists(model_path) and model_id:
+                logger.info(" Model path not found: %s, downloading from Hugging Face: %s", model_path, model_id)
+                try:
+                    from huggingface_hub import snapshot_download
+                    hf_token = getattr(settings, 'HF_TOKEN', None)
+                    os.makedirs(model_path, exist_ok=True)
+                    snapshot_download(repo_id=model_id, local_dir=model_path, token=hf_token if hf_token else None)
+                    logger.info(" Model downloaded successfully from Hugging Face")
+                except Exception as download_error:
+                    logger.error(" Failed to download model from Hugging Face: %s", download_error)
+                    self.model = None
+                    self.tokenizer = None
+                    return
+            
+            if os.path.exists(model_path) or model_id:
+                # Determine what to pass to load_robust_model
+                # If model_path exists, use it; otherwise use MODEL_ID (HF repo ID)
+                model_source = model_path if os.path.exists(model_path) else model_id
+                logger.info(" Loading model from %s", model_source)
 
-                # Get model info first
-                from app.robust_model_loader import get_model_info
-                model_info = get_model_info(settings.MODEL_PATH)
-                logger.info("Model info: %s", model_info)
+                # Get model info first (if model exists locally)
+                if os.path.exists(model_path):
+                    from app.robust_model_loader import get_model_info
+                    model_info = get_model_info(model_path)
+                    logger.info("Model info: %s", model_info)
 
-                # Try to load with ultimate robust loader
-                self.model, self.tokenizer = load_robust_model(settings.MODEL_PATH)
+                # Try to load with ultimate robust loader (can accept local path or HF repo ID)
+                hf_token = getattr(settings, 'HF_TOKEN', None)
+                self.model, self.tokenizer = load_robust_model(model_source, hf_token=hf_token)
 
                 if self.model is not None and self.tokenizer is not None:
                     logger.info(" Model loaded successfully with ultimate robust loader")
@@ -68,12 +94,12 @@ class GrammarCorrectionProcessor:
                         logger.info(" Model test successful: '%s'", test_result)
                     except (RuntimeError, AttributeError) as test_e:
                         logger.warning("Model test failed but model loaded: %s", test_e)
-                if self.model is None or self.tokenizer is None:
+                else:
                     logger.warning(" Model loading failed, using fallback")
                     self.model = None
                     self.tokenizer = None
-            if not os.path.exists(settings.MODEL_PATH):
-                logger.warning(" Model path not found: %s", settings.MODEL_PATH)
+            else:
+                logger.warning(" Model path not found: %s and MODEL_ID not set", model_path)
                 self.model = None
                 self.tokenizer = None
         except (OSError, RuntimeError, ImportError) as e:
@@ -91,11 +117,22 @@ class GrammarCorrectionProcessor:
             logger.warning("OCR not available: %s", e)
             self.ocr_reader = None
 
+    def _initialize_spell_checker(self):
+        """Initialize spell checker for catching spelling errors"""
+        try:
+            from spellchecker import SpellChecker  # pylint: disable=import-outside-toplevel
+            self.spell_checker = SpellChecker(language='en')
+            logger.info("Spell checker initialized")
+        except (ImportError, Exception) as e:
+            logger.warning("Spell checker not available: %s", e)
+            self.spell_checker = None
+
     def is_ready(self) -> Dict[str, bool]:
         """Check readiness"""
         return {
             "model_loaded": self.model is not None,
-            "ocr_available": self.ocr_reader is not None
+            "ocr_available": self.ocr_reader is not None,
+            "spell_checker_available": self.spell_checker is not None
         }
 
     def handle_input(self, input_source_path: str) -> Tuple[Optional[Any], str]:
@@ -179,28 +216,28 @@ class GrammarCorrectionProcessor:
 
         if input_type == 'html':
             # For HTML, we need to preserve the structure while extracting text for correction
+            # Store the original HTML string to preserve formatting exactly
+            original_html_string = content
             soup = BeautifulSoup(content, 'html.parser')
 
-            # Extract text content for grammar correction while preserving HTML structure
-            extracted_text = ""
-            text_elements = []
+            # Extract ALL text content for grammar correction (not just specific elements)
+            # This ensures we catch errors in any HTML element (td, th, etc.)
+            # Use get_text() to extract all text, preserving structure for reconstruction
+            extracted_text = soup.get_text(separator=' ', strip=False)
+            
+            # Clean up excessive whitespace while preserving structure
+            # Replace multiple spaces/newlines with single space, but keep line breaks for readability
+            import re
+            extracted_text = re.sub(r'\s+', ' ', extracted_text)
+            extracted_text = extracted_text.strip()
 
-            # Find all text-containing elements
-            for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'li', 'span', 'a', 'strong', 'em', 'b', 'i']):
-                if element.get_text().strip():  # Only process elements with actual text
-                    text_elements.append(element)
-                    extracted_text += element.get_text() + "\n"
-
-            if not extracted_text:
-                extracted_text = soup.get_text()
-
-            # Return both the extracted text and the soup object for reconstruction
-            return extracted_text, soup
+            # Return extracted text, soup object, and original HTML string for reconstruction
+            return extracted_text, (soup, original_html_string)
 
         return None, None
 
     def correct_grammar(self, text: str) -> str:
-        """Correct grammar with improved fallback handling"""
+        """Correct grammar with chunked processing and spell checking"""
         if not self.model or not self.tokenizer:
             logger.info("Model not available, using fallback correction")
             return self._fallback_correction(text)
@@ -211,6 +248,34 @@ class GrammarCorrectionProcessor:
             if not text:
                 return text
 
+            # Step 1: Apply model correction
+            # Check text length - if it's too long, process in chunks
+            # Estimate tokens (rough approximation: 1 token ≈ 0.75 words)
+            estimated_tokens = len(text.split()) * 1.33
+            max_tokens_per_chunk = 100  # Leave some margin below 128 limit
+            
+            if estimated_tokens <= max_tokens_per_chunk:
+                # Text is short enough, process normally
+                model_corrected = self._correct_grammar_chunk(text)
+            else:
+                # Text is too long, process in chunks
+                logger.info("Text is long (%d estimated tokens), processing in chunks", int(estimated_tokens))
+                model_corrected = self._correct_grammar_chunked(text, max_tokens_per_chunk)
+            
+            # Step 2: Apply spell checking after model correction
+            if self.spell_checker:
+                spell_corrected = self._apply_spell_checking(model_corrected)
+                return spell_corrected
+            else:
+                return model_corrected
+
+        except Exception as e:
+            logger.error("Error in correct_grammar: %s", e, exc_info=True)
+            return self._fallback_correction(text)
+    
+    def _correct_grammar_chunk(self, text: str) -> str:
+        """Correct grammar for a single chunk of text"""
+        try:
             # Use the exact same logic as googlecolab.py
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.model.to(device)
@@ -235,29 +300,151 @@ class GrammarCorrectionProcessor:
 
             # If result is empty, it's a model failure - use fallback
             if not corrected_text or corrected_text.strip() == "":
-                logger.warning("Model returned empty result, using fallback correction")
+                logger.warning("Model returned empty result for chunk, using fallback")
                 return self._fallback_correction(text)
 
             # Clean up the corrected text
             corrected_text = corrected_text.strip()
-
-            # Check if the model actually made changes
-            if corrected_text == text:
-                logger.info("Model found no grammar errors, trying fallback correction")
-                # Try fallback correction to catch obvious errors the model missed
-                fallback_result = self._fallback_correction(text)
-                if fallback_result != text:
-                    logger.info(" Fallback correction applied: '%s...' -> '%s...'", text[:50], fallback_result[:50])
-                    return fallback_result
-                logger.info("No corrections needed - text is grammatically correct")
-                return text
-            logger.info(" Grammar correction applied: '%s...' -> '%s...'", text[:50], corrected_text[:50])
             return corrected_text
 
-        except (RuntimeError, AttributeError, ValueError) as e:
-            logger.error("Grammar correction error: %s", e)
-            logger.info("Falling back to rule-based correction")
+        except Exception as e:
+            logger.error("Error correcting chunk: %s", e)
             return self._fallback_correction(text)
+    
+    def _correct_grammar_chunked(self, text: str, max_tokens_per_chunk: int = 100) -> str:
+        """Process long text in chunks and combine results"""
+        # Split text into sentences for better chunking
+        # This preserves sentence boundaries which helps the model
+        sentences = re.split(r'([.!?]\s+)', text)
+        
+        # Recombine sentences with their punctuation
+        sentence_pairs = []
+        for i in range(0, len(sentences) - 1, 2):
+            if i + 1 < len(sentences):
+                sentence_pairs.append(sentences[i] + sentences[i + 1])
+            else:
+                sentence_pairs.append(sentences[i])
+        if len(sentences) % 2 == 1:
+            sentence_pairs.append(sentences[-1])
+        
+        # Group sentences into chunks that fit within token limit
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentence_pairs:
+            # Estimate tokens for current chunk + new sentence
+            test_chunk = (current_chunk + " " + sentence).strip()
+            estimated_tokens = len(test_chunk.split()) * 1.33
+            
+            if estimated_tokens <= max_tokens_per_chunk and current_chunk:
+                # Add to current chunk
+                current_chunk = test_chunk
+            else:
+                # Save current chunk and start new one
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = sentence
+        
+        # Add final chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        logger.info("Split text into %d chunks for processing", len(chunks))
+        
+        # Process each chunk
+        corrected_chunks = []
+        for i, chunk in enumerate(chunks):
+            logger.debug("Processing chunk %d/%d (length: %d chars)", i + 1, len(chunks), len(chunk))
+            corrected_chunk = self._correct_grammar_chunk(chunk)
+            corrected_chunks.append(corrected_chunk)
+        
+        # Combine corrected chunks
+        corrected_text = " ".join(corrected_chunks)
+        
+        # Check if any corrections were made
+        if corrected_text.strip() == text.strip():
+            logger.info("No grammar errors found after chunked processing")
+        else:
+            logger.info("Grammar correction applied via chunked processing: '%s...' -> '%s...'", 
+                       text[:50], corrected_text[:50])
+        
+        return corrected_text
+
+    def _check_model_changes(self, original: str, corrected: str) -> bool:
+        """Check if the model actually made changes"""
+        return original.strip() != corrected.strip()
+    
+    def _apply_spell_checking(self, text: str) -> str:
+        """Apply spell checking to catch errors the model missed"""
+        if not self.spell_checker:
+            return text
+        
+        try:
+            # Split text into words while preserving punctuation and spacing
+            # Use regex to find words (sequences of letters, including apostrophes)
+            # Improved pattern to handle all word characters including uppercase
+            words = re.findall(r"(\b[\w']+\b|\W+)", text)
+            corrected_words = []
+            corrections_made = 0
+            
+            for word in words:
+                # Skip non-word tokens (punctuation, spaces, newlines)
+                if not re.match(r"^[\w']+$", word):
+                    corrected_words.append(word)
+                    continue
+                
+                # Check spelling (case-insensitive)
+                # Convert to lowercase for checking, but preserve original case
+                word_lower = word.lower()
+                # Remove apostrophes for checking (e.g., "don't" -> "dont")
+                word_for_check = word_lower.replace("'", "")
+                
+                # Skip very short words (likely abbreviations or valid)
+                if len(word_for_check) < 3:
+                    corrected_words.append(word)
+                    continue
+                
+                # Check if word is misspelled
+                # Use unknown() method to check if word is misspelled
+                # This is more reliable than checking dictionary membership
+                unknown_words = self.spell_checker.unknown([word_for_check])
+                is_misspelled = word_for_check in unknown_words
+                
+                if word_for_check and is_misspelled:
+                    # Word is misspelled, get correction
+                    correction = self.spell_checker.correction(word_for_check)
+                    
+                    if correction and correction != word_for_check and len(correction) > 0:
+                        # Preserve original case
+                        if word.isupper():
+                            # All caps - keep all caps
+                            correction = correction.upper()
+                        elif word[0].isupper():
+                            # Title case - capitalize first letter
+                            correction = correction.capitalize()
+                        # else: keep lowercase
+                        
+                        corrected_words.append(correction)
+                        corrections_made += 1
+                        logger.info("Spell checker correction: '%s' -> '%s'", word, correction)
+                    else:
+                        # No correction found, keep original
+                        corrected_words.append(word)
+                else:
+                    # Word is correctly spelled
+                    corrected_words.append(word)
+            
+            if corrections_made > 0:
+                corrected_text = ''.join(corrected_words)
+                logger.info("Spell checker applied %d corrections", corrections_made)
+                return corrected_text
+            else:
+                logger.debug("Spell checker found no errors")
+                return text
+                
+        except Exception as e:
+            logger.error("Error in spell checking: %s", e, exc_info=True)
+            return text
 
     def _fallback_correction(self, text: str) -> str:
         """Enhanced fallback corrections for common errors and OCR mistakes"""
@@ -582,52 +769,186 @@ class GrammarCorrectionProcessor:
 
         if input_type == 'html':
             try:
-                # original_content is already a soup object from extract_text
-                if hasattr(original_content, 'find_all'):
-                    soup = original_content
+                # original_content is a tuple of (soup, original_html_string) from extract_text
+                if isinstance(original_content, tuple) and len(original_content) == 2:
+                    soup, html_string = original_content
                 else:
-                    soup = BeautifulSoup(original_content, 'html.parser')
-                text_nodes = soup.find_all(string=True)
+                    # Fallback for old format
+                    if hasattr(original_content, 'find_all'):
+                        soup = original_content
+                        html_string = str(soup)
+                    else:
+                        html_string = str(original_content)
+                        soup = BeautifulSoup(html_string, 'html.parser')
 
-                original_corrected_words_set = {
-                    corr_dict['original_word'].lower()
-                    for corr_dict in corrections
-                    if corr_dict['original_word'] != corr_dict['corrected_word']
-                }
+                # Build a mapping of original words to their corrected versions
+                word_corrections = {}
+                for corr_dict in corrections:
+                    orig_word = corr_dict.get('original_word', '')
+                    corr_word = corr_dict.get('corrected_word', '')
+                    if orig_word and orig_word != corr_word:
+                        word_corrections[orig_word.lower()] = {
+                            'original': orig_word,
+                            'corrected': corr_word
+                        }
+                
+                logger.info("HTML reconstruction: Processing %d corrections: %s", 
+                           len(word_corrections), 
+                           list(word_corrections.keys()))
 
+                if not word_corrections:
+                    # No corrections, return original HTML string
+                    logger.warning("HTML reconstruction: No corrections to apply")
+                    return html_string
+
+                # DOM-based replacement: Traverse text nodes and insert real <u> Tag nodes
+                # This approach is robust and handles all edge cases correctly
+                from bs4 import NavigableString, Tag, Comment
+                
+                # Get all text nodes, excluding script, style, and comments
+                text_nodes = []
+                for element in soup.descendants:
+                    if isinstance(element, NavigableString):
+                        parent = element.parent
+                        if parent:
+                            parent_name = parent.name.lower() if parent.name else None
+                            # Skip script, style, and comments
+                            if parent_name not in ['script', 'style']:
+                                # Check if parent is a comment or if element is inside a comment
+                                is_comment = isinstance(parent, Comment)
+                                # Also check if the string itself is a comment
+                                if not is_comment and not isinstance(element, Comment):
+                                    text_nodes.append(element)
+                
+                # Process each text node
                 for text_node in text_nodes:
-                    original_node_text = str(text_node)
-                    parent = text_node.parent
-
-                    if parent and parent.name in ['script', 'style']:
+                    original_text = str(text_node)
+                    if not original_text.strip():
                         continue
-
-                    tokens_and_separators = re.findall(r'(\b\w+\b|\W+)', original_node_text)
-
-                    new_content = []
-                    modified = False
-                    for item in tokens_and_separators:
-                        if re.fullmatch(r'\b\w+\b', item):
-                            word_lower = item.lower()
-                            if word_lower in original_corrected_words_set:
-                                new_content.append(f'<u>{item}</u>')
-                                modified = True
-                            else:
-                                new_content.append(item)
-                        else:
-                            new_content.append(item)
-
-                    if modified:
-                        modified_node_text = "".join(new_content)
-                        # Create a new NavigableString to preserve original formatting
-                        from bs4 import NavigableString
-                        new_text_node = NavigableString(modified_node_text)
-                        text_node.replace_with(new_text_node)
-
-                return soup
-            except (ValueError, AttributeError) as e:
-                logger.error("HTML processing error: %s", e)
-                return None
+                    
+                    # Find all words that need to be wrapped (with their positions)
+                    # Use a set to track positions to avoid overlapping matches
+                    word_matches = []
+                    used_positions = set()
+                    
+                    for orig_lower, corr_data in word_corrections.items():
+                        original_word = corr_data.get('original', '')
+                        if not original_word:
+                            continue
+                        
+                        # Escape special regex characters in the word
+                        escaped_word = re.escape(original_word)
+                        
+                        # Use simple word boundary pattern - \b works well for most cases
+                        # This is more reliable than the complex negative lookahead/lookbehind
+                        word_pattern = r'\b' + escaped_word + r'\b'
+                        
+                        # Find all matches in this text node (case-insensitive)
+                        for match in re.finditer(word_pattern, original_text, re.IGNORECASE | re.UNICODE):
+                            start = match.start()
+                            end = match.end()
+                            
+                            # Skip if this position range overlaps with a previous match
+                            if any(start < prev_end and end > prev_start 
+                                   for prev_start, prev_end, _ in word_matches):
+                                continue
+                            
+                            # Get the actual word at this position (preserve original case)
+                            actual_word = original_text[start:end]
+                            
+                            # Verify it's the same word (case-insensitive comparison)
+                            if actual_word.lower() != orig_lower:
+                                continue
+                            
+                            # Additional safety: verify it's not part of a larger word
+                            # Check character before (if exists)
+                            if start > 0:
+                                char_before = original_text[start - 1]
+                                # If it's a word character, skip (part of larger word)
+                                if char_before.isalnum() or char_before == '_':
+                                    continue
+                            
+                            # Check character after (if exists)
+                            if end < len(original_text):
+                                char_after = original_text[end]
+                                # If it's a word character, skip (part of larger word)
+                                if char_after.isalnum() or char_after == '_':
+                                    continue
+                            
+                            word_matches.append((start, end, actual_word))
+                            used_positions.add((start, end))
+                    
+                    if not word_matches:
+                        continue
+                    
+                    # Sort matches by position (ascending) and remove any overlapping ones
+                    word_matches.sort(key=lambda x: x[0])
+                    
+                    # Remove overlapping matches (keep first occurrence)
+                    non_overlapping = []
+                    for start, end, word in word_matches:
+                        if not any(start < prev_end and end > prev_start 
+                                  for prev_start, prev_end, _ in non_overlapping):
+                            non_overlapping.append((start, end, word))
+                    word_matches = non_overlapping
+                    
+                    # Build new content: split text and insert <u> tags
+                    parent = text_node.parent
+                    if not parent:
+                        continue
+                    
+                    new_elements = []
+                    last_pos = 0
+                    
+                    for start, end, word in word_matches:
+                        # Add text before this match
+                        if start > last_pos:
+                            before_text = original_text[last_pos:start]
+                            if before_text:
+                                new_elements.append(NavigableString(before_text))
+                        
+                        # Create <u> tag with the word
+                        u_tag = soup.new_tag('u')
+                        u_tag.string = word
+                        new_elements.append(u_tag)
+                        
+                        last_pos = end
+                    
+                    # Add remaining text after last match
+                    if last_pos < len(original_text):
+                        after_text = original_text[last_pos:]
+                        if after_text:
+                            new_elements.append(NavigableString(after_text))
+                    
+                    # Replace the original text node with new elements
+                    if new_elements:
+                        # Replace with first element
+                        text_node.replace_with(new_elements[0])
+                        # Insert remaining elements after the first
+                        current = new_elements[0]
+                        for elem in new_elements[1:]:
+                            current.insert_after(elem)
+                            current = elem
+                
+                # Convert soup back to string, preserving formatting
+                # BeautifulSoup's str() preserves structure but may normalize some whitespace
+                # For maximum preservation, we could use prettify with formatter=None,
+                # but str() is sufficient and faster
+                html_output = str(soup)
+                
+                # Ensure no escaped <u> tags (shouldn't happen with DOM-based approach, but verify)
+                if '&lt;u&gt;' in html_output or '&lt;/u&gt;' in html_output:
+                    logger.warning("Found escaped <u> tags in output, replacing")
+                    html_output = html_output.replace('&lt;u&gt;', '<u>').replace('&lt;/u&gt;', '</u>')
+                
+                return html_output
+                
+            except (ValueError, AttributeError, re.error) as e:
+                logger.error("HTML processing error: %s", e, exc_info=True)
+                # Return original HTML string on error
+                if isinstance(original_content, tuple) and len(original_content) == 2:
+                    return original_content[1]
+                return str(original_content) if original_content else None
 
         return None
 
@@ -660,18 +981,15 @@ class GrammarCorrectionProcessor:
                     content_output = "Error converting image to base64"
 
         elif input_type == 'html':
-            if hasattr(reconstructed_content, 'prettify'):
-                # Convert to string and clean up excessive whitespace
-                html_string = str(reconstructed_content)
-                # Remove excessive newlines and tabs while preserving structure
-                import re
-                # Replace multiple consecutive whitespace with single space
-                html_string = re.sub(r'\s+', ' ', html_string)
-                # Restore proper line breaks for HTML tags
-                html_string = re.sub(r'>\s*<', '><', html_string)
-                content_output = html_string
-            elif isinstance(reconstructed_content, str):
+            # reconstructed_content is already a properly formatted HTML string
+            # with <u> tags and all original formatting preserved
+            if isinstance(reconstructed_content, str):
                 content_output = reconstructed_content
+            elif hasattr(reconstructed_content, 'prettify'):
+                # Fallback: convert soup to string (shouldn't happen with new logic)
+                content_output = str(reconstructed_content)
+            else:
+                content_output = str(reconstructed_content) if reconstructed_content else None
 
         try:
             json_output_string = json.dumps(corrections, indent=4)
@@ -711,10 +1029,11 @@ class GrammarCorrectionProcessor:
                 text_to_correct = " ".join(extracted_texts) if extracted_texts else ""
                 original_content_for_reconstruct = original_content
             elif input_type == 'html':
-                extracted_text, soup_object = self.extract_text(original_content, input_type)
+                extracted_text, soup_and_html = self.extract_text(original_content, input_type)
                 text_to_correct = extracted_text if extracted_text else ""
                 original_ocr_results = None
-                original_content_for_reconstruct = soup_object  # Pass the soup object for reconstruction
+                # Pass both soup object and original HTML string for reconstruction
+                original_content_for_reconstruct = soup_and_html
             else:
                 return {
                     "success": False,

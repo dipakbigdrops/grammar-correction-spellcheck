@@ -54,7 +54,13 @@ class UniversalProcessor:
             
             # Check cache first (universal caching)
             file_hash = self._compute_file_hash(file_path)
-            cached_result = self.cache_manager.get_file_cache(file_hash)
+            cached_result = None
+            try:
+                cached_result = self.cache_manager.get_file_cache(file_hash)
+            except (KeyError, AttributeError, Exception) as e:
+                # If cache lookup fails, log and continue without cache
+                logger.warning("Cache lookup failed for %s: %s. Continuing without cache.", 
+                             os.path.basename(file_path), e)
             
             if cached_result:
                 self.stats['cache_hits'] += 1
@@ -100,8 +106,11 @@ class UniversalProcessor:
             # Use existing processor for single files
             result = self.processor.process_input(file_path, output_dir)
             
-            # Add universal metadata
-            result['input_type'] = 'single_file'
+            # Preserve the original input_type from processor (html, image, etc.)
+            # Don't overwrite it with 'single_file' as we need to know the actual type
+            # Add universal metadata without overwriting input_type
+            if 'input_type' not in result:
+                result['input_type'] = 'single_file'  # Fallback if not set
             result['file_count'] = 1
             result['batch_processing'] = False
             
