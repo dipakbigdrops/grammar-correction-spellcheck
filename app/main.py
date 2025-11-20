@@ -29,6 +29,13 @@ from app.utils import (
     set_cached_result, save_uploaded_file, cleanup_old_files
 )
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Helper functions for HTML preview storage in Redis
 def store_html_preview(preview_id: str, html_content: str, filename: str, ttl: int = 3600) -> bool:
     """Store HTML preview in Redis with TTL"""
@@ -91,13 +98,6 @@ from app.cache_manager import get_cache_manager
 
 # HTML previews are now stored in Redis with 1-hour TTL
 # Helper functions for Redis-based preview storage
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
